@@ -115,21 +115,18 @@ class Chunk(BaseModel):
     chunk_index: int
     metadata: Dict[str, Any] = Field(default_factory=dict)
     token_count: Optional[int] = None
-    created_at: Optional[datetime] = None
-    
     @field_validator('embedding')
     @classmethod
     def validate_embedding(cls, v: Optional[List[float]]) -> Optional[List[float]]:
         """Validate embedding dimensions."""
-        if v is not None and len(v) != 1536:  # OpenAI text-embedding-3-small
-            raise ValueError(f"Embedding must have 1536 dimensions, got {len(v)}")
+        valid_dims = {1024, 1536}  # 1024 = mxbai-embed-large, 1536 = OpenAI text-embedding-3-small
+        if v is not None and len(v) not in valid_dims:
+            raise ValueError(
+                f"Embedding must have one of {sorted(valid_dims)} dimensions, got {len(v)}"
+            )
         return v
 
 
-class Session(BaseModel):
-    """Session model."""
-    id: Optional[str] = None
-    user_id: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

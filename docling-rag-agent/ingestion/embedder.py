@@ -1,6 +1,4 @@
-"""
-Document embedding generation for vector search.
-"""
+"""Document embedding generation for vector search."""
 
 import os
 import asyncio
@@ -20,7 +18,6 @@ try:
 except ImportError:
     # For direct execution or testing
     import sys
-    import os
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from utils.providers import get_embedding_client, get_embedding_model
 
@@ -36,7 +33,7 @@ EMBEDDING_MODEL = get_embedding_model()
 
 class EmbeddingGenerator:
     """Generates embeddings for document chunks."""
-    
+
     def __init__(
         self,
         model: str = EMBEDDING_MODEL,
@@ -46,9 +43,9 @@ class EmbeddingGenerator:
     ):
         """
         Initialize embedding generator.
-        
+
         Args:
-            model: OpenAI embedding model to use
+            model: Embedding model to use
             batch_size: Number of texts to process in parallel
             max_retries: Maximum number of retry attempts
             retry_delay: Delay between retries in seconds
@@ -60,55 +57,47 @@ class EmbeddingGenerator:
         
         # Model-specific configurations
         self.model_configs = {
+            "mxbai-embed-large:latest": {"dimensions": 1024, "max_tokens": 8192},
+            "mxbai-embed-large": {"dimensions": 1024, "max_tokens": 8192},
             "text-embedding-3-small": {"dimensions": 1536, "max_tokens": 8191},
             "text-embedding-3-large": {"dimensions": 3072, "max_tokens": 8191},
             "text-embedding-ada-002": {"dimensions": 1536, "max_tokens": 8191}
         }
-        
+
         if model not in self.model_configs:
             logger.warning(f"Unknown model {model}, using default config")
-            self.config = {"dimensions": 1536, "max_tokens": 8191}
+            self.config = {"dimensions": 1024, "max_tokens": 8192}
         else:
             self.config = self.model_configs[model]
-    
     async def generate_embedding(self, text: str) -> List[float]:
-        """
-        Generate embedding for a single text.
-        
-        Args:
-            text: Text to embed
-        
-        Returns:
-            Embedding vector
-        """
-        # Truncate text if too long
-        if len(text) > self.config["max_tokens"] * 4:  # Rough token estimation
-            text = text[:self.config["max_tokens"] * 4]
-        
+        """Generate an embedding for a single text snippet."""
+        # Truncate text if too long (rough token estimate at 4 chars/token)
+        if len(text) > self.config["max_tokens"] * 4:
+            text = text[: self.config["max_tokens"] * 4]
+
         for attempt in range(self.max_retries):
             try:
                 response = await embedding_client.embeddings.create(
                     model=self.model,
                     input=text
                 )
-                
                 return response.data[0].embedding
-                
+
             except RateLimitError as e:
                 if attempt == self.max_retries - 1:
                     raise
-                
+
                 # Exponential backoff for rate limits
                 delay = self.retry_delay * (2 ** attempt)
                 logger.warning(f"Rate limit hit, retrying in {delay}s")
                 await asyncio.sleep(delay)
-                
+
             except APIError as e:
                 logger.error(f"OpenAI API error: {e}")
                 if attempt == self.max_retries - 1:
                     raise
                 await asyncio.sleep(self.retry_delay)
-                
+
             except Exception as e:
                 logger.error(f"Unexpected error generating embedding: {e}")
                 if attempt == self.max_retries - 1:
@@ -369,50 +358,3 @@ def create_embedder(
         embedder.generate_embedding = cached_generate
     
     return embedder
-
-
-# Example usage
-async def main():
-    """Example usage of the embedder."""
-    from .chunker import ChunkingConfig, create_chunker
-    
-    # Create chunker and embedder
-    config = ChunkingConfig(chunk_size=200, use_semantic_splitting=False)
-    chunker = create_chunker(config)
-    embedder = create_embedder()
-    
-    sample_text = """
-    Google's AI initiatives include advanced language models, computer vision,
-    and machine learning research. The company has invested heavily in
-    transformer architectures and neural network optimization.
-    
-    Microsoft's partnership with OpenAI has led to integration of GPT models
-    into various products and services, making AI accessible to enterprise
-    customers through Azure cloud services.
-    """
-    
-    # Chunk the document
-    chunks = chunker.chunk_document(
-        content=sample_text,
-        title="AI Initiatives",
-        source="example.md"
-    )
-    
-    print(f"Created {len(chunks)} chunks")
-    
-    # Generate embeddings
-    def progress_callback(current, total):
-        print(f"Processing batch {current}/{total}")
-    
-    embedded_chunks = await embedder.embed_chunks(chunks, progress_callback)
-    
-    for i, chunk in enumerate(embedded_chunks):
-        print(f"Chunk {i}: {len(chunk.content)} chars, embedding dim: {len(chunk.embedding)}")
-    
-    # Test query embedding
-    query_embedding = await embedder.embed_query("Google AI research")
-    print(f"Query embedding dimension: {len(query_embedding)}")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

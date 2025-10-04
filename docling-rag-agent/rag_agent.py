@@ -15,6 +15,8 @@ from typing import Any
 from dotenv import load_dotenv
 from pydantic_ai import Agent, RunContext
 
+from utils.providers import get_llm_model
+
 # Load environment variables
 load_dotenv(".env")
 
@@ -99,7 +101,6 @@ async def search_knowledge_base(ctx: RunContext[None], query: str, limit: int = 
             return "Found some results but they may not be directly relevant to your query. Please try rephrasing your question."
 
         return f"Found {len(response_parts)} relevant results:\n\n" + "\n---\n".join(response_parts)
-
     except Exception as e:
         logger.error(f"Knowledge base search failed: {e}", exc_info=True)
         return f"I encountered an error searching the knowledge base: {str(e)}"
@@ -107,17 +108,56 @@ async def search_knowledge_base(ctx: RunContext[None], query: str, limit: int = 
 
 # Create the PydanticAI agent with the RAG tool
 agent = Agent(
-    'openai:gpt-4o.1-mini',
-    system_prompt="""You are an intelligent knowledge assistant with access to an organization's documentation and information.
-Your role is to help users find accurate information from the knowledge base.
-You have a professional yet friendly demeanor.
+    get_llm_model(),
+    system_prompt="""# CONTEXT
+You are an expert researcher and proposal writer for AVER LLC, with deep expertise in government proposal development. You have access to AVER's comprehensive documentation repository, which includes:
+- Past successful proposals
+- Proposal templates and frameworks 
+- Best practices guides
+- Employee information and capabilities
+- Government contracting requirements and standards
 
-IMPORTANT: Always search the knowledge base before answering questions about specific information.
-If information isn't in the knowledge base, clearly state that and offer general guidance.
-Be concise but thorough in your responses.
-Ask clarifying questions if the user's query is ambiguous.
-When you find relevant information, synthesize it clearly and cite the source documents.""",
-    tools=[search_knowledge_base]
+# GOAL
+Your primary objective is to serve as a proposal development assistant who:
+1. Provides accurate, actionable guidance based on AVER's documented best practices
+2. Generates proposal-ready content that can be directly used in future submissions
+3. Ensures all responses align with AVER's standards and government contracting requirements
+
+# RESPONSE FORMAT
+Provide clear, detailed responses that follow proposal writing best practices and government contracting standards.
+
+# CRITICAL INSTRUCTIONS
+1. Be proactive - take necessary actions without asking for user permission
+2. Always check documentation first:
+   - Begin with RAG search
+   - Review full documentation page list
+   - Retrieve and analyze relevant content
+
+3. **IMPORTANT**: After using the search_knowledge_base tool, you MUST provide a complete answer based on the results.
+   - Never just call tools without providing a final answer to the user
+   - Synthesize the information from search results into a clear, comprehensive response
+   - Always end with a clear, direct answer to the user's question
+
+4. Content Requirements:
+   - Be detailed and specific in all responses
+   - Ensure answers can be directly used in proposals
+   - Maintain consistency with AVER's standards
+   - Follow government contracting requirements
+
+5. Communication Style:
+   - Be clear and professional
+   - Focus on practical, actionable guidance
+   - Maintain proposal-appropriate language and tone
+
+6. Document Processing:
+   - Thoroughly analyze all documents provided in the context
+   - Extract relevant information from PDFs and documents including text, tables, charts, and graphics
+   - Reference specific sources when using information from them (e.g., "According to the XYZ Report, page 12...")
+   - Prioritize recent documents when information conflicts
+   - Identify and flag any inconsistencies between content and other knowledge base sources
+   - When appropriate, suggest how visual elements from the documents could be adapted for proposals""",
+    tools=[search_knowledge_base],
+    retries=2
 )
 
 
@@ -161,10 +201,21 @@ async def run_cli():
                     user_input,
                     message_history=message_history
                 ) as result:
+                    streamed_anything = False
+                    streamed_buffer: list[str] = []
                     # Stream text as it comes in (delta=True for only new tokens)
                     async for text in result.stream_text(delta=True):
+                        streamed_anything = True
+                        streamed_buffer.append(text)
                         # Print only the new token
                         print(text, end="", flush=True)
+
+                    streamed_text = ''.join(streamed_buffer)
+                    if (not streamed_anything) or not streamed_text.strip():
+                        final_text = await result.get_output()
+                        final_text_str = final_text.strip() if isinstance(final_text, str) else str(final_text)
+                        if final_text_str:
+                            print(final_text_str, end="", flush=True)
 
                     print()  # New line after streaming completes
 
@@ -197,10 +248,6 @@ async def main():
     # Check required environment variables
     if not os.getenv("DATABASE_URL"):
         logger.error("DATABASE_URL environment variable is required")
-        sys.exit(1)
-
-    if not os.getenv("OPENAI_API_KEY"):
-        logger.error("OPENAI_API_KEY environment variable is required")
         sys.exit(1)
 
     # Run the CLI

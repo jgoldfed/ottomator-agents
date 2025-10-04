@@ -17,6 +17,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 from pydantic_ai import Agent, RunContext
 
+from utils.providers import get_llm_model
+
 # Load environment variables
 load_dotenv(".env")
 
@@ -121,19 +123,19 @@ async def search_knowledge_base(ctx: RunContext[None], query: str, limit: int = 
         return f"I encountered an error searching the knowledge base: {str(e)}"
 
 
-# Create the PydanticAI agent with the RAG tool
+# Create the PydanticAI agent WITHOUT tools (tool calling doesn't work well with some Ollama models)
+# We'll manually search and provide context instead
 agent = Agent(
-    'openai:gpt-4o-mini',
+    get_llm_model(),
     system_prompt="""You are an intelligent knowledge assistant with access to an organization's documentation and information.
 Your role is to help users find accurate information from the knowledge base.
 You have a professional yet friendly demeanor.
 
-IMPORTANT: Always search the knowledge base before answering questions about specific information.
-If information isn't in the knowledge base, clearly state that and offer general guidance.
-Be concise but thorough in your responses.
-Ask clarifying questions if the user's query is ambiguous.
-When you find relevant information, synthesize it clearly and cite the source documents.""",
-    tools=[search_knowledge_base]
+When provided with search results from the knowledge base, synthesize the information into clear, comprehensive answers.
+Cite the source documents when referencing specific information.
+If the search results don't contain relevant information, clearly state that.
+Be concise but thorough in your responses.""",
+    retries=1
 )
 
 
@@ -255,35 +257,58 @@ class RAGAgentCLI:
     async def stream_chat(self, message: str) -> None:
         """Send message to agent and display streaming response."""
         try:
+            # First, search the knowledge base manually
+            search_results = await search_knowledge_base(None, message, limit=5)
+            
+            # Prepare the enhanced prompt with search results
+            enhanced_message = f"""User Question: {message}
+
+Knowledge Base Search Results:
+{search_results}
+
+Please provide a comprehensive answer based on the search results above."""
+            
             print(f"\n{Colors.BOLD}🤖 Assistant:{Colors.END} ", end="", flush=True)
 
             # Stream the response using run_stream
             async with agent.run_stream(
-                message,
+                enhanced_message,
                 message_history=self.message_history
             ) as result:
+                streamed_anything = False
+                streamed_buffer: list[str] = []
                 # Stream text as it comes in (delta=True for only new tokens)
                 async for text in result.stream_text(delta=True):
-                    # Print only the new token
+                    streamed_anything = True
+                    streamed_buffer.append(text)
                     print(text, end="", flush=True)
+
+                # Check if anything was streamed, if not try to get final output
+                streamed_text = ''.join(streamed_buffer).strip()
+                
+                if not streamed_text:
+                    # Model didn't stream anything - try to get the data
+                    try:
+                        final_output = result.data
+                        if final_output:
+                            final_text = str(final_output).strip()
+                            if final_text:
+                                print(final_text, end="", flush=True)
+                    except Exception:
+                        print(f"{Colors.YELLOW}[No response generated]{Colors.END}", end="", flush=True)
 
                 print()  # New line after streaming completes
 
                 # Update message history for context
                 self.message_history = result.all_messages()
 
-                # Extract and display tools used in this turn
-                new_messages = result.new_messages()
-                tools_used = self.extract_tool_calls(new_messages)
-                if tools_used:
-                    print(self.format_tools_used(tools_used))
-
             # Print separator
             print(f"{Colors.BLUE}{'─' * 60}{Colors.END}")
 
         except Exception as e:
             print(f"\n{Colors.RED}✗ Error: {e}{Colors.END}")
-            # logger.error(f"Chat error: {e}", exc_info=True)
+            import traceback
+            traceback.print_exc()
 
     async def run(self):
         """Run the CLI main loop."""
@@ -373,13 +398,12 @@ def main():
     if not args.verbose:
         logging.getLogger('httpx').setLevel(logging.WARNING)
         logging.getLogger('httpcore').setLevel(logging.WARNING)
-        logging.getLogger('openai').setLevel(logging.WARNING)
 
     # Override model if specified
     if args.model:
         global agent
         agent = Agent(
-            f'openai:{args.model}',
+            f'ollama:{args.model}',
             system_prompt=agent.system_prompt,
             tools=[search_knowledge_base]
         )
@@ -388,10 +412,6 @@ def main():
     # Check required environment variables
     if not os.getenv("DATABASE_URL"):
         print(f"{Colors.RED}✗ DATABASE_URL environment variable is required{Colors.END}")
-        sys.exit(1)
-
-    if not os.getenv("OPENAI_API_KEY"):
-        print(f"{Colors.RED}✗ OPENAI_API_KEY environment variable is required{Colors.END}")
         sys.exit(1)
 
     # Create and run CLI

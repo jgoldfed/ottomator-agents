@@ -1,103 +1,93 @@
 """
-Simplified provider configuration for OpenAI models only.
+Provider utilities for configuring Ollama-backed models.
 """
 
 import os
-from typing import Optional
-from pydantic_ai.models.openai import OpenAIModel
-from pydantic_ai.providers.openai import OpenAIProvider
-import openai
+from functools import lru_cache
+
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
+from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.providers.ollama import OllamaProvider
 
 # Load environment variables
 load_dotenv()
 
+# Default values for local Ollama setup
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434/v1"
+DEFAULT_LLM_MODEL = "gpt-oss:120b-cloud"
+DEFAULT_EMBEDDING_MODEL = "mxbai-embed-large:latest"
 
+
+def _get_base_url() -> str:
+    """Return the Ollama base URL, defaulting to the local instance."""
+    return os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL)
+
+
+def _get_api_key() -> str:
+    """Return the Ollama API key or a placeholder if not required."""
+    return os.getenv("OLLAMA_API_KEY", "ollama")
+
+
+def _normalize_model_name(model_name: str) -> str:
+    """Strip provider prefixes like 'ollama:' from model names."""
+    if model_name.lower().startswith("ollama:"):
+        return model_name.split(":", 1)[1]
+    return model_name
+
+
+@lru_cache(maxsize=1)
 def get_llm_model() -> OpenAIModel:
-    """
-    Get LLM model configuration for OpenAI.
+    """Get an `OpenAIModel` configured to talk to Ollama."""
+    raw_choice = os.getenv("LLM_CHOICE", DEFAULT_LLM_MODEL)
+    llm_choice = _normalize_model_name(raw_choice)
     
-    Returns:
-        Configured OpenAI model
-    """
-    llm_choice = os.getenv('LLM_CHOICE', 'gpt-4.1-mini')
-    api_key = os.getenv('OPENAI_API_KEY')
+    # Use OllamaProvider with the base URL
+    provider = OllamaProvider(
+        base_url=_get_base_url(),
+        api_key=_get_api_key(),
+    )
     
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY environment variable is required")
-    
-    return OpenAIModel(llm_choice, provider=OpenAIProvider(api_key=api_key))
+    return OpenAIModel(llm_choice, provider=provider)
 
 
-def get_embedding_client() -> openai.AsyncOpenAI:
-    """
-    Get OpenAI client for embeddings.
-    
-    Returns:
-        Configured OpenAI client for embeddings
-    """
-    api_key = os.getenv('OPENAI_API_KEY')
-    
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY environment variable is required")
-    
-    return openai.AsyncOpenAI(api_key=api_key)
+@lru_cache(maxsize=1)
+def get_embedding_client() -> AsyncOpenAI:
+    """Return an AsyncOpenAI client pointed at Ollama for embeddings."""
+    return AsyncOpenAI(
+        base_url=_get_base_url(),
+        api_key=_get_api_key(),
+    )
 
 
 def get_embedding_model() -> str:
-    """
-    Get embedding model name.
-    
-    Returns:
-        Embedding model name
-    """
-    return os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
+    """Return the embedding model name."""
+    return os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
 
 
 def get_ingestion_model() -> OpenAIModel:
-    """
-    Get model for ingestion tasks (uses same model as main LLM).
-    
-    Returns:
-        Configured model for ingestion tasks
-    """
+    """Return model configuration used during ingestion tasks."""
     return get_llm_model()
 
 
 def validate_configuration() -> bool:
-    """
-    Validate that required environment variables are set.
-    
-    Returns:
-        True if configuration is valid
-    """
-    required_vars = [
-        'OPENAI_API_KEY',
-        'DATABASE_URL'
-    ]
-    
-    missing_vars = []
-    for var in required_vars:
-        if not os.getenv(var):
-            missing_vars.append(var)
-    
+    """Validate that critical environment variables are present."""
+    required_vars = ["DATABASE_URL"]
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+
     if missing_vars:
         print(f"Missing required environment variables: {', '.join(missing_vars)}")
         return False
-    
+
     return True
 
 
 def get_model_info() -> dict:
-    """
-    Get information about current model configuration.
-    
-    Returns:
-        Dictionary with model configuration info
-    """
+    """Return information about the active model configuration."""
     return {
-        "llm_provider": "openai",
-        "llm_model": os.getenv('LLM_CHOICE', 'gpt-4.1-mini'),
-        "embedding_provider": "openai",
-        "embedding_model": get_embedding_model(),
+        "llm_provider": "ollama",
+        "llm_model": _normalize_model_name(os.getenv("LLM_CHOICE", DEFAULT_LLM_MODEL)),
+        "embedding_provider": "ollama",
+        "embedding_model": _normalize_model_name(get_embedding_model()),
+        "base_url": _get_base_url(),
     }
